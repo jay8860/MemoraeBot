@@ -1,16 +1,6 @@
 """
 apple_calendar.py — Apple Calendar integration via iCloud CalDAV
-
-Apple does NOT have a public REST API for Calendar — the correct protocol is CalDAV.
-iCloud exposes CalDAV at: https://caldav.icloud.com/
-
-Auth: Apple ID + App-Specific Password
-  → Generate at: https://appleid.apple.com → Sign-In & Security → App-Specific Passwords
-
-Usage:
-  client = AppleCalendarClient(apple_id="you@icloud.com", app_password="xxxx-xxxx-xxxx-xxxx")
-  client.create_event(title="Team meeting", start=datetime(2025,6,1,14,0), end=datetime(2025,6,1,15,0))
-  events = client.get_upcoming_events(days=7)
+Fixed for caldav 3.x (save_event + icalendar_component API)
 """
 
 import logging
@@ -22,36 +12,31 @@ import pytz
 
 log = logging.getLogger(__name__)
 
-# iCloud CalDAV discovery URL
 ICLOUD_CALDAV_URL = "https://caldav.icloud.com/"
 
 
 class AppleCalendarClient:
-    """Thin wrapper around the caldav library for iCloud calendars."""
 
     def __init__(self, apple_id: str, app_password: str, timezone: str = "Asia/Kolkata"):
-        self.apple_id = apple_id
+        self.apple_id    = apple_id
         self.app_password = app_password
-        self.tz = pytz.timezone(timezone)
-        self._client = None
-        self._principal = None
-        self._calendars = None
+        self.tz          = pytz.timezone(timezone)
+        self._client     = None
+        self._principal  = None
+        self._calendars  = None
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _get_client(self):
         if self._client is not None:
             return self._client
-        try:
-            import caldav
-            self._client = caldav.DAVClient(
-                url=ICLOUD_CALDAV_URL,
-                username=self.apple_id,
-                password=self.app_password,
-            )
-            return self._client
-        except ImportError:
-            raise RuntimeError("caldav package not installed. Run: pip install caldav")
+        import caldav
+        self._client = caldav.DAVClient(
+            url=ICLOUD_CALDAV_URL,
+            username=self.apple_id,
+            password=self.app_password,
+        )
+        return self._client
 
     def _get_principal(self):
         if self._principal is None:
@@ -66,11 +51,11 @@ class AppleCalendarClient:
     def _get_default_calendar(self):
         cals = self._get_calendars()
         if not cals:
-            raise RuntimeError("No calendars found in your iCloud account.")
-        # Prefer a calendar named 'Home' or 'Personal' — otherwise use first
+            raise RuntimeError("No calendars found in iCloud account.")
+        # Prefer Home / Personal / Calendar — else use first writable one
         for cal in cals:
-            name = (getattr(cal, 'name', None) or "").lower()
-            if name in ("home", "personal", "calendar"):
+            name = (str(getattr(cal, "name", "") or "")).lower()
+            if name in ("home", "personal", "calendar", "icloud"):
                 return cal
         return cals[0]
 
@@ -79,14 +64,35 @@ class AppleCalendarClient:
             return self.tz.localize(dt)
         return dt.astimezone(self.tz)
 
+    def _build_ical(self, title: str, start_local: datetime,
+                    end_local: datetime, description: str = "") -> str:
+        """Build a valid iCal string for a single event."""
+        from icalendar import Calendar, Event as ICalEvent
+
+        cal   = Calendar()
+        cal.add("prodid", "-//MemoraeBot//EN")
+        cal.add("version", "2.0")
+        cal.add("calscale", "GREGORIAN")
+
+        evt = ICalEvent()
+        evt.add("uid",      str(uuid.uuid4()) + "@memoraebot")
+        evt.add("summary",  title)
+        evt.add("dtstart",  start_local)
+        evt.add("dtend",    end_local)
+        evt.add("dtstamp",  datetime.now(pytz.utc))
+        if description:
+            evt.add("description", description)
+        cal.add_component(evt)
+
+        return cal.to_ical().decode("utf-8")
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def test_connection(self) -> tuple[bool, str]:
-        """Test if credentials are valid. Returns (ok, message)."""
         try:
-            cals = self._get_calendars()
-            names = [getattr(c, 'name', '?') for c in cals[:5]]
-            return True, f"Connected. Found {len(cals)} calendar(s): {', '.join(str(n) for n in names)}"
+            cals  = self._get_calendars()
+            names = [str(getattr(c, "name", "?")) for c in cals[:5]]
+            return True, f"Connected ✅ — {len(cals)} calendar(s): {', '.join(names)}"
         except Exception as exc:
             log.error("Apple Calendar connection failed: %s", exc)
             return False, str(exc)
@@ -98,51 +104,36 @@ class AppleCalendarClient:
         end: datetime = None,
         description: str = "",
         all_day: bool = False,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """
-        Create a new calendar event.
-        start/end should be naive datetime objects in the user's local timezone.
+        Create a calendar event. Returns (success, error_message).
+        start/end should be naive datetimes in the user's local timezone.
         """
         try:
-            from icalendar import Calendar, Event
-
             start_local = self._localise(start)
             end_local   = self._localise(end) if end else start_local + timedelta(hours=1)
 
-            cal = Calendar()
-            cal.add("prodid", "-//MemoraeBot//EN")
-            cal.add("version", "2.0")
-
-            event = Event()
-            event.add("summary", title)
-            if all_day:
-                event.add("dtstart", start_local.date())
-                event.add("dtend",   (end_local.date() + timedelta(days=1)))
-            else:
-                event.add("dtstart", start_local)
-                event.add("dtend",   end_local)
-            if description:
-                event.add("description", description)
-            event.add("uid", str(uuid.uuid4()))
-            event.add("dtstamp", datetime.utcnow().replace(tzinfo=pytz.utc))
-            cal.add_component(event)
-
+            ical_str = self._build_ical(title, start_local, end_local, description)
             calendar = self._get_default_calendar()
-            calendar.add_event(cal.to_ical().decode("utf-8"))
-            log.info("Event created: %s at %s", title, start_local)
-            return True
+
+            # caldav 3.x uses save_event(); older versions used add_event()
+            # Try save_event first, fall back to add_event
+            try:
+                calendar.save_event(ical_str)
+            except AttributeError:
+                calendar.add_event(ical_str)
+
+            log.info("Event created in Apple Calendar: %s at %s", title, start_local)
+            return True, ""
 
         except Exception as exc:
             log.error("Create event failed: %s", exc)
-            return False
+            return False, str(exc)
 
     def get_upcoming_events(self, days: int = 7) -> list[dict]:
-        """
-        Fetch events from all calendars for the next N days.
-        Returns a list of dicts: {title, start, end, calendar, description}
-        """
-        results = []
-        now = datetime.now(pytz.utc)
+        """Fetch events from all calendars for the next N days."""
+        results  = []
+        now      = datetime.now(pytz.utc)
         end_range = now + timedelta(days=days)
 
         try:
@@ -151,52 +142,77 @@ class AppleCalendarClient:
                     raw_events = cal.date_search(start=now, end=end_range, expand=True)
                     for vevent in raw_events:
                         try:
-                            comp = vevent.vobject_instance.vevent
-                            title = str(getattr(comp, "summary", None) or "").strip() or "(Untitled)"
-                            dtstart = getattr(comp, "dtstart", None)
-                            dtend   = getattr(comp, "dtend",   None)
-
-                            start_dt = dtstart.value if dtstart else None
-                            end_dt   = dtend.value   if dtend   else None
-
-                            # Normalise to datetime
-                            if isinstance(start_dt, date) and not isinstance(start_dt, datetime):
-                                start_dt = datetime.combine(start_dt, datetime.min.time(), tzinfo=pytz.utc)
-                            if isinstance(end_dt, date) and not isinstance(end_dt, datetime):
-                                end_dt = datetime.combine(end_dt, datetime.min.time(), tzinfo=pytz.utc)
-
-                            # Localise for display
-                            if start_dt and start_dt.tzinfo:
-                                start_dt = start_dt.astimezone(self.tz)
-                            if end_dt and end_dt.tzinfo:
-                                end_dt = end_dt.astimezone(self.tz)
-
-                            description = str(getattr(comp, "description", None) or "").strip()
-                            cal_name = str(getattr(cal, "name", None) or "Calendar")
-
-                            results.append({
-                                "title":       title,
-                                "start":       start_dt,
-                                "end":         end_dt,
-                                "calendar":    cal_name,
-                                "description": description,
-                            })
+                            parsed = self._parse_event(vevent, cal)
+                            if parsed:
+                                results.append(parsed)
                         except Exception as inner:
                             log.debug("Skipping malformed event: %s", inner)
                 except Exception as cal_exc:
-                    log.warning("Error searching calendar %s: %s", getattr(cal, "name", "?"), cal_exc)
-
+                    log.warning("Error searching calendar %s: %s",
+                                getattr(cal, "name", "?"), cal_exc)
         except Exception as exc:
             log.error("get_upcoming_events failed: %s", exc)
 
-        # Sort by start time
         results.sort(key=lambda e: (e["start"] or datetime.min.replace(tzinfo=pytz.utc)))
         return results
 
+    def _parse_event(self, vevent, cal) -> dict | None:
+        """Parse a caldav event object into a plain dict. Works with caldav 3.x and older."""
+        title = start_dt = end_dt = description = None
+
+        # ── Try caldav 3.x icalendar_component first ──────────────────────────
+        try:
+            comp = vevent.icalendar_component
+            title       = str(comp.get("SUMMARY", "") or "").strip() or "(Untitled)"
+            description = str(comp.get("DESCRIPTION", "") or "").strip()
+            raw_start   = comp.get("DTSTART")
+            raw_end     = comp.get("DTEND")
+            start_dt    = raw_start.dt if raw_start else None
+            end_dt      = raw_end.dt   if raw_end   else None
+        except Exception:
+            pass
+
+        # ── Fallback: vobject_instance (older caldav) ─────────────────────────
+        if title is None:
+            try:
+                comp        = vevent.vobject_instance.vevent
+                title       = str(getattr(comp, "summary",     None) or "").strip() or "(Untitled)"
+                description = str(getattr(comp, "description", None) or "").strip()
+                dtstart     = getattr(comp, "dtstart", None)
+                dtend       = getattr(comp, "dtend",   None)
+                start_dt    = dtstart.value if dtstart else None
+                end_dt      = dtend.value   if dtend   else None
+            except Exception:
+                return None
+
+        if title is None:
+            return None
+
+        # Normalise date → datetime
+        if isinstance(start_dt, date) and not isinstance(start_dt, datetime):
+            start_dt = datetime.combine(start_dt, datetime.min.time()).replace(tzinfo=pytz.utc)
+        if isinstance(end_dt, date) and not isinstance(end_dt, datetime):
+            end_dt = datetime.combine(end_dt, datetime.min.time()).replace(tzinfo=pytz.utc)
+
+        # Localise for display
+        if start_dt and getattr(start_dt, "tzinfo", None):
+            start_dt = start_dt.astimezone(self.tz)
+        if end_dt and getattr(end_dt, "tzinfo", None):
+            end_dt = end_dt.astimezone(self.tz)
+
+        return {
+            "title":       title,
+            "start":       start_dt,
+            "end":         end_dt,
+            "calendar":    str(getattr(cal, "name", None) or "Calendar"),
+            "description": description or "",
+        }
+
     def get_today_events(self) -> list[dict]:
+        today = datetime.now(self.tz).date()
         return [
             e for e in self.get_upcoming_events(days=1)
-            if e["start"] and e["start"].date() == datetime.now(self.tz).date()
+            if e["start"] and e["start"].date() == today
         ]
 
     def get_calendar_names(self) -> list[str]:
@@ -226,13 +242,12 @@ class AppleCalendarClient:
         return line
 
 
-# ── Module-level convenience functions ────────────────────────────────────────
+# ── Module-level convenience ──────────────────────────────────────────────────
 
 def build_client(user: dict) -> Optional[AppleCalendarClient]:
-    """Build a client from a user DB row. Returns None if not configured."""
     apple_id  = (user.get("apple_id")       or "").strip()
     apple_pwd = (user.get("apple_password") or "").strip()
     if not apple_id or not apple_pwd:
         return None
-    tz = user.get("timezone") or "Asia/Kolkata"
-    return AppleCalendarClient(apple_id, apple_pwd, timezone=tz)
+    return AppleCalendarClient(apple_id, apple_pwd,
+                               timezone=user.get("timezone") or "Asia/Kolkata")

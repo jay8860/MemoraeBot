@@ -861,7 +861,7 @@ async def _handle_create_event(update: Update, user: dict, intent_data: dict) ->
         )
         return
 
-    ok = cal_client.create_event(title, start_dt, end_dt, description=description)
+    ok, err = cal_client.create_event(title, start_dt, end_dt, description=description)
     if ok:
         import pytz
         tz_obj = pytz.timezone(tz)
@@ -876,8 +876,8 @@ async def _handle_create_event(update: Update, user: dict, intent_data: dict) ->
         )
     else:
         await update.message.reply_text(
-            f"❌ Failed to create event in Apple Calendar. "
-            "Check your credentials with /settings."
+            f"❌ Failed to create event in Apple Calendar.\n`{err[:120]}`\n\nCheck credentials with /settings.",
+            parse_mode=ParseMode.MARKDOWN,
         )
 
 
@@ -935,17 +935,22 @@ async def _handle_set_reminder(
     cal_client = ac.build_client(user)
     if cal_client:
         try:
-            dt_utc_dt = datetime.datetime.strptime(remind_utc, "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+            dt_utc_dt   = datetime.datetime.strptime(remind_utc, "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
             start_local = dt_utc_dt.astimezone(tz_obj).replace(tzinfo=None)  # naive local
             end_local   = start_local + datetime.timedelta(minutes=30)
-            ok = cal_client.create_event(
-                title=f"⏰ Reminder: {content[:60]}",
+            ok, err = cal_client.create_event(
+                title=f"⏰ {content[:60]}",
                 start=start_local,
                 end=end_local,
-                description=f"MemoraeBot reminder\n{content}",
+                description=f"MemoraeBot reminder: {content}",
             )
-            cal_note = "\n📅 Also added to Apple Calendar" if ok else ""
+            if ok:
+                cal_note = "\n📅 Added to Apple Calendar ✅"
+            else:
+                cal_note = f"\n⚠️ Calendar sync failed: {err[:80]}"
+                log.warning("Calendar reminder event failed: %s", err)
         except Exception as exc:
+            cal_note = f"\n⚠️ Calendar sync error: {str(exc)[:80]}"
             log.warning("Calendar event for reminder failed: %s", exc)
 
     await update.message.reply_text(
