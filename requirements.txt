@@ -1,0 +1,14 @@
+python-telegram-bot[job-queue]>=22.0
+google-genai
+python-dotenv
+caldav
+icalendar
+apscheduler
+python-dateutil
+pytz
+requests
+Pillow
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+dateparser
