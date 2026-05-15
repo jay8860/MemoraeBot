@@ -364,7 +364,7 @@ async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         all_events = cal_client.get_upcoming_events(days=7)
         # Exclude reminder-synced events (shown separately in /reminders)
-        events = [e for e in all_events if not e.get("title", "").startswith("⏰")]
+        events = [e for e in all_events if not e.get("is_reminder")]
         if not events:
             await update.message.reply_text("📅 No upcoming events in the next 7 days.")
             return
@@ -881,6 +881,9 @@ async def _dispatch_intent(
     elif intent == "DELETE_REMINDER":
         await _handle_delete_reminder(update, user, intent_data)
 
+    elif intent == "DELETE_EVENT":
+        await _handle_delete_event(update, user, intent_data)
+
     elif intent == "MANAGE_COLLECTION":
         await _handle_manage_collection(update, user, intent_data)
 
@@ -1110,10 +1113,10 @@ async def _handle_recurring_reminder(
                 first_utc = datetime.strptime(dates_to_create[0], "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
                 first_local = first_utc.astimezone(tz).replace(tzinfo=None)
                 cal_client.create_event(
-                    title=f"⏰ {content[:60]}",
+                    title=content[:60],
                     start=first_local,
                     end=first_local + datetime.timedelta(minutes=30),
-                    description=f"MemoraeBot recurring reminder: {content}",
+                    description=f"MemoraeBot recurring reminder: {content}\nmemoraebot-reminder: true",
                 )
                 cal_note = "\n📅 First occurrence added to Apple Calendar ✅"
             except Exception:
@@ -1209,10 +1212,10 @@ async def _handle_set_reminder(
             start_local = dt_utc_dt.astimezone(tz_obj).replace(tzinfo=None)  # naive local
             end_local   = start_local + datetime.timedelta(minutes=30)
             ok, err = cal_client.create_event(
-                title=f"⏰ {content[:60]}",
+                title=content[:60],
                 start=start_local,
                 end=end_local,
-                description=f"MemoraeBot reminder: {content}",
+                description=f"MemoraeBot reminder: {content}\nmemoraebot-reminder: true",
             )
             if ok:
                 cal_note = "\n📅 Added to Apple Calendar ✅"
@@ -1232,11 +1235,56 @@ async def _handle_set_reminder(
     )
 
 
+async def _handle_delete_event(update: Update, user: dict, intent_data: dict) -> None:
+    """Delete one or more Apple Calendar events by keyword/date/time."""
+    keyword  = (intent_data.get("keyword") or "").strip()
+    date_str = intent_data.get("date")
+    time_str = intent_data.get("time_str")
+
+    # Parse hour from time_str e.g. "19:00" → 19
+    time_hour = None
+    if time_str:
+        try:
+            time_hour = int(time_str.split(":")[0])
+        except Exception:
+            pass
+
+    cal_client = ac.build_client(user)
+    if not cal_client:
+        await update.message.reply_text(
+            "📅 Apple Calendar not connected. Use /settings to link your Apple ID."
+        )
+        return
+
+    if not keyword and not date_str and time_hour is None:
+        await update.message.reply_text(
+            "❓ Please be more specific — e.g. `delete the party event` or `delete 7pm event`."
+        )
+        return
+
+    deleted = cal_client.delete_events_matching(
+        keyword=keyword or None,
+        date_str=date_str,
+        time_hour=time_hour,
+    )
+
+    if deleted:
+        await update.message.reply_text(f"🗑 Deleted {deleted} calendar event(s).")
+    else:
+        await update.message.reply_text(
+            f"❓ No matching events found."
+            + (f" Searched for: _{keyword}_" if keyword else ""),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
 async def _handle_delete_reminder(update: Update, user: dict, intent_data: dict) -> None:
     uid             = user["id"]
     filt            = (intent_data.get("filter") or "all").lower()
     target_date     = intent_data.get("target_date")
     except_content  = (intent_data.get("except_content") or "").strip()
+    also_delete_cal = intent_data.get("also_delete_event", False)
+    cal_keyword     = (intent_data.get("keyword") or "").strip()
 
     import pytz
     tz = pytz.timezone(user.get("timezone") or DEFAULT_TIMEZONE)
@@ -1269,7 +1317,23 @@ async def _handle_delete_reminder(update: Update, user: dict, intent_data: dict)
         label = datetime.strptime(target_date, "%Y-%m-%d").strftime("%-d %b %Y")
     except Exception:
         label = target_date
-    await update.message.reply_text(f"🗑 Deleted {count} reminder(s) for {label}.")
+
+    # ── Also delete from Apple Calendar if requested ──────────────────────────
+    cal_note = ""
+    if also_delete_cal or cal_keyword:
+        cal_client = ac.build_client(user)
+        if cal_client:
+            try:
+                cal_deleted = cal_client.delete_events_matching(
+                    keyword=cal_keyword or None,
+                    date_str=target_date,
+                )
+                if cal_deleted:
+                    cal_note = f", {cal_deleted} calendar event(s) deleted ✅"
+            except Exception as e:
+                log.warning("Calendar deletion failed: %s", e)
+
+    await update.message.reply_text(f"🗑 Deleted {count} reminder(s) for {label}{cal_note}.")
 
 
 async def _handle_query(update: Update, user: dict, intent_data: dict) -> None:

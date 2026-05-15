@@ -262,13 +262,78 @@ class AppleCalendarClient:
         if end_dt and getattr(end_dt, "tzinfo", None):
             end_dt = end_dt.astimezone(self.tz)
 
+        is_reminder = "memoraebot-reminder: true" in (description or "").lower()
         return {
             "title":       title,
             "start":       start_dt,
             "end":         end_dt,
             "calendar":    str(getattr(cal, "name", None) or "Calendar"),
             "description": description or "",
+            "is_reminder": is_reminder,
         }
+
+    def delete_events_matching(
+        self,
+        keyword: str = None,
+        date_str: str = None,
+        time_hour: int = None,
+    ) -> int:
+        """
+        Find and delete calendar events matching a keyword and/or date/time.
+        Returns count of events deleted.
+        """
+        deleted      = 0
+        now          = datetime.now(pytz.utc)
+        search_start = now - timedelta(hours=2)   # look back 2 hours
+        search_end   = now + timedelta(days=7)
+        keyword_low  = (keyword or "").lower().strip()
+
+        for cal in self._get_calendars():
+            # Collect raw caldav event objects (not parsed dicts) so we can call .delete()
+            raw_events = []
+            try:
+                try:
+                    raw_events = cal.date_search(start=search_start, end=search_end, expand=False)
+                except TypeError:
+                    raw_events = cal.date_search(start=search_start, end=search_end)
+            except Exception:
+                try:
+                    raw_events = cal.events()
+                except Exception as e:
+                    log.warning("Could not fetch events from %s for deletion: %s",
+                                getattr(cal, "name", "?"), e)
+                    continue
+
+            for vevent in raw_events:
+                try:
+                    parsed = self._parse_event(vevent, cal)
+                    if not parsed:
+                        continue
+
+                    title = parsed.get("title", "").lower()
+                    start = parsed.get("start")
+
+                    # Apply keyword filter
+                    if keyword_low and keyword_low not in title:
+                        continue
+
+                    # Apply date filter
+                    if date_str and start:
+                        if start.strftime("%Y-%m-%d") != date_str:
+                            continue
+
+                    # Apply hour filter (e.g. "7pm" → hour=19)
+                    if time_hour is not None and start:
+                        if start.hour != time_hour:
+                            continue
+
+                    vevent.delete()
+                    deleted += 1
+                    log.info("Deleted calendar event: %s", parsed.get("title"))
+                except Exception as e:
+                    log.debug("Could not delete event: %s", e)
+
+        return deleted
 
     def get_today_events(self) -> list[dict]:
         today = datetime.now(self.tz).date()

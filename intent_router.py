@@ -41,6 +41,7 @@ Today's date is {today}. Classify the user's message into EXACTLY ONE of these i
   CREATE_EVENT       — user wants to schedule a calendar event / meeting / appointment
   SET_REMINDER       — user wants to be reminded at a specific time
   DELETE_REMINDER    — user wants to delete, cancel, or clear one or more reminders
+  DELETE_EVENT       — user wants to delete a calendar event from Apple Calendar
   QUERY              — user wants to search, list, or view existing data
   GET_BRIEFING       — user wants their daily summary / briefing / what's on today
   SERENDIPITY        — user wants a random old memory surfaced
@@ -58,6 +59,7 @@ Rules:
 - "surprise me", "random memory", "serendipity" → SERENDIPITY
 - "create collection", "new collection", "make a collection called", "list my collections", "what collections" → MANAGE_COLLECTION
 - "delete reminder", "cancel reminder", "remove reminder", "clear reminders", "delete all reminders" → DELETE_REMINDER
+- "delete event", "cancel event", "remove event", "delete the meeting", "cancel appointment" → DELETE_EVENT; if both event AND reminder mentioned → use DELETE_REMINDER with also_delete_event=true
 - "show", "list", "search", "find", "what did I save", "my tasks", "my reminders" → QUERY
 
 ━━━ SMART COLLECTION TAXONOMY for ADD_MEMORY ━━━
@@ -104,7 +106,10 @@ For SERENDIPITY:
 {{"intent":"SERENDIPITY"}}
 
 For DELETE_REMINDER:
-{{"intent":"DELETE_REMINDER","filter":"<all|today|tomorrow|date>","target_date":"<YYYY-MM-DD or null>","except_content":"<keyword to preserve, or null>"}}
+{{"intent":"DELETE_REMINDER","filter":"<all|today|tomorrow|date>","target_date":"<YYYY-MM-DD or null>","except_content":"<keyword to preserve, or null>","also_delete_event":false,"keyword":"<title keyword to also delete from calendar, or null>"}}
+
+For DELETE_EVENT:
+{{"intent":"DELETE_EVENT","keyword":"<title keyword to search>","date":"<YYYY-MM-DD or null>","time_str":"<HH:MM 24h or null>"}}
 
 For SET_REMINDER (with optional recurrence):
 {{"intent":"SET_REMINDER","content":"<what to remind>","remind_at":"<YYYY-MM-DD HH:MM — first occurrence>","recurrence":"<none|daily|weekly|monthly|custom>","recurrence_end":"<YYYY-MM-DD or null>","recurrence_dates":"<list of YYYY-MM-DD HH:MM strings for custom, or null>"}}
@@ -156,6 +161,10 @@ def classify(user_text: str, user_timezone: str = "Asia/Kolkata") -> dict:
 def _fallback_classify(text: str) -> dict:
     """Rule-based fallback when Gemini is unavailable."""
     lower = text.lower().strip()
+
+    if any(kw in lower for kw in ["delete event", "cancel event", "remove event",
+                                    "delete the meeting", "cancel appointment", "remove appointment"]):
+        return {"intent": "DELETE_EVENT", "keyword": re.sub(r".*(delete|cancel|remove)\s+(the\s+)?", "", lower).strip(), "date": None, "time_str": None}
 
     if any(kw in lower for kw in ["delete reminder", "cancel reminder", "remove reminder",
                                     "clear reminder", "delete all reminder"]):
