@@ -215,6 +215,28 @@ def get_collections(user_id: int) -> list[str]:
     return [r["collection"] for r in rows]
 
 
+def get_collections_with_counts(user_id: int) -> list[tuple]:
+    """Returns list of (collection_name, count) sorted by count desc."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT collection, COUNT(*) as cnt FROM memories "
+            "WHERE user_id = ? AND source != 'system' "
+            "GROUP BY collection ORDER BY cnt DESC",
+            (user_id,),
+        ).fetchall()
+    return [(r["collection"], r["cnt"]) for r in rows]
+
+
+def rename_collection(user_id: int, old_name: str, new_name: str) -> int:
+    """Rename all memories from old_name collection to new_name. Returns count updated."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE memories SET collection = ? WHERE user_id = ? AND collection = ?",
+            (new_name, user_id, old_name),
+        )
+    return cur.rowcount
+
+
 def delete_memory(memory_id: int, user_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute(

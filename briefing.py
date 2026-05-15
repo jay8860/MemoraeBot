@@ -180,7 +180,9 @@ def build_query_response(user: dict, intent: dict) -> str:
                 if len(content) > 120:
                     content = content[:117] + "..."
                 saved = m.get("created_at", "")[:10]
-                lines.append(f"  • [{m['id']}] _{content}_ — {saved}")
+                coll  = m.get("collection", "General")
+                lines.append(f"  • _{content}_")
+                lines.append(f"    #{m['id']} · {coll} · {saved}")
             lines.append("")
         elif target in ("memories", "memory"):
             lines.append("🧠 No memories found" + (f" matching '{query}'" if query else "") + ".")
@@ -197,8 +199,9 @@ def build_query_response(user: dict, intent: dict) -> str:
             for t in tasks[:10]:
                 status_icon = {"today": "🎯", "this_week": "📆", "queue": "📋", "done": "✅"}.get(t["status"], "•")
                 pri = " 🔴" if t.get("priority") == "high" else ""
-                dl  = f"  _{t['deadline']}_" if t.get("deadline") else ""
-                lines.append(f"  {status_icon} [{t['id']}] *{t['title']}*{pri}{dl}")
+                dl  = f" · due {t['deadline']}" if t.get("deadline") else ""
+                lines.append(f"  {status_icon} *{t['title']}*{pri}")
+                lines.append(f"    #{t['id']} · {t['status'].replace('_',' ').title()}{dl}")
             lines.append("")
         elif target in ("tasks", "task"):
             lines.append("✅ No tasks found.")

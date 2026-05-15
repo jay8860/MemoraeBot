@@ -220,31 +220,32 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "*MemoraeBot — Commands & Usage*\n\n"
+        "*MemoraeBot — Quick Reference*\n\n"
         "━━━ *Just send me anything:*\n"
-        "  `Remember the milk` → saves a memory\n"
-        "  `Add task: Review the report` → adds a task\n"
-        "  `Schedule team meeting tomorrow 3pm` → creates calendar event\n"
-        "  `Remind me to call Priya at 6pm` → sets a reminder\n"
-        "  `What's my day?` → morning briefing\n"
-        "  `Surprise me` → random old memory\n"
-        "  Send a voice note, photo, or file → saved to memory/trunk\n\n"
+        "  `Stay in Bali AirBnb Airframe in Forest` → memory (Travel)\n"
+        "  `Idea: use voice notes for sarpanch reports` → memory (Ideas)\n"
+        "  `Add task: Review PWD estimates` → task\n"
+        "  `Schedule meeting with SP tomorrow 3pm` → calendar\n"
+        "  `Remind me at 6pm to call the DM` → reminder\n"
+        "  `What's my day?` → briefing  ·  `Surprise me` → serendipity\n\n"
         "━━━ *Commands:*\n"
-        "  /briefing — get today's briefing now\n"
-        "  /tasks — view your task board\n"
-        "  /memories — browse recent memories\n"
-        "  /calendar — upcoming calendar events\n"
+        "  /whatcando — full guide with examples (4 pages)\n"
+        "  /briefing — today's briefing now\n"
+        "  /tasks — task board\n"
+        "  /memories — recent memories\n"
+        "  /collections — all memory collections\n"
+        "  /calendar — upcoming events\n"
         "  /reminders — pending reminders\n"
-        "  /stats — your memory + task stats\n"
-        "  /settings — view your settings\n"
-        "  /setapple [email] [password] — link Apple Calendar\n"
-        "  /setbriefing [HH:MM] — set daily briefing time\n"
-        "  /settimezone [timezone] — e.g. Asia/Kolkata\n"
-        "  /serendipity — resurface a random memory\n"
-        "  /help — this help message\n\n"
-        "━━━ *Editing tasks:*\n"
-        "  Reply to any task message with `done`, `delete`, "
-        "`move to today`, `move to this week`, or `change title to: [new title]`",
+        "  /stats — your stats\n"
+        "  /serendipity — random memory\n"
+        "  /settings · /setapple · /setbriefing · /settimezone\n\n"
+        "━━━ *Collections:*\n"
+        "  `Create collection called Policy Notes`\n"
+        "  `List my collections`\n"
+        "  `Save under Travel: ...`\n\n"
+        "━━━ *Editing:*\n"
+        "  Reply to any task: `done` / `delete` / `move to today` / `rename to: [title]`\n"
+        "  Reply to any event: `change date to 16 May`",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -326,10 +327,14 @@ async def cmd_memories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         content = m["content"]
         if len(content) > 120:
             content = content[:117] + "..."
-        saved = m.get("created_at", "")[:10]
+        saved_raw = m.get("created_at", "")[:10]
+        try:
+            saved = datetime.datetime.strptime(saved_raw, "%Y-%m-%d").strftime("%-d %b %Y")
+        except Exception:
+            saved = saved_raw
         coll  = m.get("collection", "General")
-        lines.append(f"• [{m['id']}] _{content}_")
-        lines.append(f"  {saved}  ·  {coll}")
+        lines.append(f"• _{content}_")
+        lines.append(f"  #{m['id']}  ·  {saved}  ·  {coll}")
         lines.append("")
 
     if collections and not collection:
@@ -549,6 +554,121 @@ async def cmd_serendipity(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 
+async def cmd_collections(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show all memory collections with counts."""
+    user = _get_full_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first.")
+        return
+
+    uid = user["id"]
+    collections = db.get_collections_with_counts(uid)
+
+    if not collections:
+        await update.message.reply_text(
+            "📂 No collections yet.\n\nJust start saving memories — I'll auto-sort them!\n\n"
+            "Or say: `Create a new collection called Fitness`"
+        )
+        return
+
+    lines = ["📂 *Your Memory Collections*\n"]
+    collection_icons = {
+        "Travel": "✈️", "Work": "💼", "Ideas": "💡", "Learning": "📚",
+        "People": "👥", "Health": "🏃", "Finance": "💰", "Personal": "🌿",
+        "General": "📌", "Images": "🖼", "Trunk": "📦", "Voice": "🎧", "Calendar": "📅",
+    }
+    for coll, count in collections:
+        icon = collection_icons.get(coll, "📂")
+        lines.append(f"{icon} *{coll}* — {count} memory{'s' if count != 1 else ''}")
+
+    lines.append("")
+    lines.append("_Use_ `/memories [collection]` _to browse any collection._")
+    lines.append("_Say_ `Create collection called [name]` _to add a new one._")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_whatcando(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comprehensive guide to everything MemoraeBot can do."""
+    pages = [
+        # Page 1 — Memory
+        (
+            "🧠 *MemoraeBot — What I Can Do (1/4)*\n\n"
+            "━━━ *SAVING MEMORIES*\n"
+            "Just send me anything in plain language:\n\n"
+            "• `Stay in Bali AirBnb called Airframe in Forest` → saved under Travel\n"
+            "• `Interesting: MGNREGA wage compliance in Dantewada is only 62%` → saved under Work\n"
+            "• `Idea: use WhatsApp polls for sarpanch attendance in meetings` → saved under Ideas\n"
+            "• `Read that Japan uses AI for pothole detection on roads` → saved under Learning\n"
+            "• `Dr Mehta's number is 98765-43210` → saved under People\n\n"
+            "I auto-detect the category: Travel, Work, Ideas, Learning, People, Health, Finance, Personal.\n\n"
+            "━━━ *COLLECTIONS*\n"
+            "• `/collections` — see all your categories with counts\n"
+            "• `/memories Travel` — browse a specific collection\n"
+            "• `Create a new collection called Policy Notes` → creates it\n"
+            "• `Save this under Policy Notes: ...` → saves to that exact collection"
+        ),
+        # Page 2 — Tasks
+        (
+            "✅ *MemoraeBot — What I Can Do (2/4)*\n\n"
+            "━━━ *TASK BOARD*\n"
+            "• `Add task: Review the PWD estimates for Katekalyan` → Queue\n"
+            "• `Today task: Call SP about road blockage` → Today\n"
+            "• `This week: Submit budget proposals` → This Week\n"
+            "• `Urgent task: Reply to DM's circular` → High priority\n\n"
+            "View & manage:\n"
+            "• `/tasks` — full board grouped by Today / This Week / Queue / Done\n"
+            "• `/tasks today` — only today's tasks\n\n"
+            "Edit by replying to any task message:\n"
+            "• Reply `done` → marks complete\n"
+            "• Reply `delete` → removes it\n"
+            "• Reply `move to today` → bumps it up\n"
+            "• Reply `deadline: 20 May` → sets due date\n"
+            "• Reply `rename to: New Title` → renames it\n"
+            "• Or tap the buttons below the task message"
+        ),
+        # Page 3 — Calendar + Reminders
+        (
+            "📅 *MemoraeBot — What I Can Do (3/4)*\n\n"
+            "━━━ *APPLE CALENDAR*\n"
+            "• `Schedule meeting with SP at 3pm tomorrow` → creates event\n"
+            "• `Book site visit to Barsur on 20 May at 11am` → creates event\n"
+            "• `/calendar` — see upcoming 7 days\n"
+            "• Reply `change date to 16 May` to any event confirmation → updates it\n\n"
+            "━━━ *REMINDERS*\n"
+            "• `Remind me to call Priya at 6pm` → fires at 6pm\n"
+            "• `Remind me tomorrow at 9am to review the report` → fires next morning\n"
+            "• `Remind me in 2 hours about the site visit` → relative time\n"
+            "• `/reminders` — see all pending reminders in your local time\n\n"
+            "Reminders also auto-appear in Apple Calendar so you see them on all devices."
+        ),
+        # Page 4 — Briefing, Search, Serendipity
+        (
+            "✨ *MemoraeBot — What I Can Do (4/4)*\n\n"
+            "━━━ *MORNING BRIEFING*\n"
+            "• `What's my day?` or `/briefing` → full daily digest:\n"
+            "  Today's calendar · Tasks · Reminders · A random memory\n"
+            "• `/setbriefing 07:00` → auto-sends every morning at 7am\n\n"
+            "━━━ *SEARCH YOUR MEMORY*\n"
+            "• `Show me everything about Barsur` → searches all memories\n"
+            "• `What tasks do I have this week?` → filtered task view\n"
+            "• `Find my travel memories` → browses Travel collection\n"
+            "• `Tell me everything you know` → shows all data\n\n"
+            "━━━ *SERENDIPITY*\n"
+            "• `Surprise me` or `/serendipity` → surfaces a random old memory\n"
+            "• Appears automatically in your morning briefing\n\n"
+            "━━━ *FILES & VOICE*\n"
+            "• Send a voice note → transcribed and saved/acted on\n"
+            "• Send a photo → described and saved with image link\n"
+            "• Send a PDF/doc → saved to Trunk collection with Drive link\n\n"
+            "━━━ *SETTINGS*\n"
+            "• `/settings` · `/setapple` · `/settimezone` · `/stats`"
+        ),
+    ]
+
+    for page in pages:
+        await update.message.reply_text(page, parse_mode=ParseMode.MARKDOWN)
+
+
 async def cmd_serendipity_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _get_full_user(update.effective_user.id)
     if not user:
@@ -749,6 +869,9 @@ async def _dispatch_intent(
     elif intent == "SERENDIPITY":
         text = briefing_module.build_serendipity_message(user)
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    elif intent == "MANAGE_COLLECTION":
+        await _handle_manage_collection(update, user, intent_data)
 
     elif intent == "SAVE_FILE":
         content = intent_data.get("caption") or raw_text or "File saved"
@@ -981,6 +1104,90 @@ async def _handle_set_reminder(
 async def _handle_query(update: Update, user: dict, intent_data: dict) -> None:
     text = briefing_module.build_query_response(user, intent_data)
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def _handle_manage_collection(update: Update, user: dict, intent_data: dict) -> None:
+    """Handle MANAGE_COLLECTION intent — create, list, or rename collections."""
+    action = (intent_data.get("action") or "list").lower()
+    name   = (intent_data.get("name") or "").strip()
+    uid    = user["id"]
+
+    collection_icons = {
+        "Travel": "✈️", "Work": "💼", "Ideas": "💡", "Learning": "📚",
+        "People": "👥", "Health": "🏃", "Finance": "💰", "Personal": "🌿",
+        "General": "📌", "Images": "🖼", "Trunk": "📦", "Voice": "🎧",
+    }
+
+    if action == "list":
+        collections = db.get_collections_with_counts(uid)
+        if not collections:
+            await update.message.reply_text(
+                "📂 You don't have any collections yet.\n\n"
+                "Start saving memories and I'll auto-sort them, or say:\n"
+                "`Create a new collection called Fitness`"
+            )
+            return
+        lines = ["📂 *Your Collections*\n"]
+        for coll, count in collections:
+            icon = collection_icons.get(coll, "📂")
+            lines.append(f"{icon} *{coll}* — {count} {'memory' if count == 1 else 'memories'}")
+        lines.append("\n_Use_ `/memories [collection]` _to browse any of these._")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    elif action == "create":
+        if not name:
+            await update.message.reply_text(
+                "❓ What should the new collection be called?\n\nTry: `Create collection called Fitness`"
+            )
+            return
+        # Capitalise properly
+        name = name.title()
+        # Check if it already exists
+        existing = db.get_collections(uid)
+        if name in existing:
+            await update.message.reply_text(
+                f"📂 Collection *{name}* already exists!\n\n"
+                f"Use `/memories {name}` to browse it, or just say:\n"
+                f"`Save this under {name}: [your memory]`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        # Collections are created implicitly when a memory is saved — seed it with a placeholder
+        db.add_memory(uid, f"Collection '{name}' created", collection=name, source="system")
+        icon = collection_icons.get(name, "📂")
+        await update.message.reply_text(
+            f"{icon} *Collection '{name}' created!*\n\n"
+            f"Now you can save memories to it:\n"
+            f"`Save under {name}: [your thought]`\n"
+            f"or I'll auto-detect it from context.\n\n"
+            f"Browse it anytime with `/memories {name}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    elif action == "rename":
+        new_name = (intent_data.get("new_name") or "").strip().title()
+        if not name or not new_name:
+            await update.message.reply_text("❓ Try: `Rename collection Health to Wellness`")
+            return
+        count = db.rename_collection(uid, name.title(), new_name)
+        if count > 0:
+            await update.message.reply_text(
+                f"✏️ Renamed *{name.title()}* → *{new_name}* ({count} memories updated).",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await update.message.reply_text(
+                f"❓ Collection *{name.title()}* not found. Use `/collections` to see your collections.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+    else:
+        await update.message.reply_text(
+            "📂 *Collections*\n\nTry:\n"
+            "• `List my collections`\n"
+            "• `Create collection called Fitness`\n"
+            "• `Rename collection Health to Wellness`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 # ── Reply-to-message handlers (Phase 4: editing) ─────────────────────────────
@@ -1233,8 +1440,10 @@ async def post_init(app) -> None:
     await app.bot.set_my_commands([
         BotCommand("start",              "Start / onboarding"),
         BotCommand("briefing",           "Get today's briefing now"),
+        BotCommand("whatcando",          "Everything I can do with examples"),
         BotCommand("tasks",              "View task board"),
         BotCommand("memories",           "Browse memories"),
+        BotCommand("collections",        "View all memory collections"),
         BotCommand("calendar",           "Upcoming Apple Calendar events"),
         BotCommand("reminders",          "Pending reminders"),
         BotCommand("serendipity",        "Random memory"),
@@ -1274,6 +1483,8 @@ def main() -> None:
     app.add_handler(CommandHandler("settimezone",        cmd_set_timezone))
     app.add_handler(CommandHandler("serendipity",        cmd_serendipity))
     app.add_handler(CommandHandler("serendipity_toggle", cmd_serendipity_toggle))
+    app.add_handler(CommandHandler("collections",        cmd_collections))
+    app.add_handler(CommandHandler("whatcando",          cmd_whatcando))
 
     # Messages
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))

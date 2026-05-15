@@ -132,29 +132,54 @@ class AppleCalendarClient:
 
     def get_upcoming_events(self, days: int = 7) -> list[dict]:
         """Fetch events from all calendars for the next N days."""
-        results  = []
-        now      = datetime.now(pytz.utc)
+        results   = []
+        now       = datetime.now(pytz.utc)
         end_range = now + timedelta(days=days)
 
         try:
             for cal in self._get_calendars():
                 try:
-                    raw_events = cal.date_search(start=now, end=end_range, expand=True)
+                    # iCloud CalDAV does not support server-side expand — use expand=False
+                    # and filter dates client-side.
+                    try:
+                        raw_events = cal.date_search(start=now, end=end_range, expand=False)
+                    except TypeError:
+                        # Older caldav versions don't accept expand kwarg
+                        raw_events = cal.date_search(start=now, end=end_range)
+
                     for vevent in raw_events:
                         try:
                             parsed = self._parse_event(vevent, cal)
                             if parsed:
-                                results.append(parsed)
+                                # Client-side date filter
+                                start = parsed.get("start")
+                                if start:
+                                    start_utc = start.astimezone(pytz.utc)
+                                    if start_utc <= end_range:
+                                        results.append(parsed)
+                                else:
+                                    results.append(parsed)
                         except Exception as inner:
                             log.debug("Skipping malformed event: %s", inner)
+
                 except Exception as cal_exc:
                     log.warning("Error searching calendar %s: %s",
                                 getattr(cal, "name", "?"), cal_exc)
+
         except Exception as exc:
             log.error("get_upcoming_events failed: %s", exc)
 
-        results.sort(key=lambda e: (e["start"] or datetime.min.replace(tzinfo=pytz.utc)))
-        return results
+        # Deduplicate by (title, start) — CalDAV can return dupes across calendars
+        seen   = set()
+        unique = []
+        for e in results:
+            key = (e["title"], str(e["start"]))
+            if key not in seen:
+                seen.add(key)
+                unique.append(e)
+
+        unique.sort(key=lambda e: (e["start"] or datetime.min.replace(tzinfo=pytz.utc)))
+        return unique
 
     def _parse_event(self, vevent, cal) -> dict | None:
         """Parse a caldav event object into a plain dict. Works with caldav 3.x and older."""

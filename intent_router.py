@@ -36,28 +36,44 @@ _SYSTEM_PROMPT = """\
 You are the intent classifier for MemoraeBot — a personal memory and life-organisation assistant.
 Today's date is {today}. Classify the user's message into EXACTLY ONE of these intents:
 
-  ADD_MEMORY    — user wants to save/remember something (thought, idea, note, link, quote)
-  ADD_TASK      — user wants to add a to-do item, action item, or task
-  CREATE_EVENT  — user wants to schedule a calendar event / meeting / appointment
-  SET_REMINDER  — user wants to be reminded at a specific time
-  QUERY         — user wants to search, list, or view existing data (tasks/memories/calendar/reminders)
-  GET_BRIEFING  — user wants their daily summary / briefing / what's on today
-  SERENDIPITY   — user wants a random old memory surfaced (surprise me, random, serendipity)
-  SAVE_FILE     — fallback for media messages without clear intent
+  ADD_MEMORY         — user wants to save/remember something (thought, idea, note, link, quote)
+  ADD_TASK           — user wants to add a to-do item, action item, or task
+  CREATE_EVENT       — user wants to schedule a calendar event / meeting / appointment
+  SET_REMINDER       — user wants to be reminded at a specific time
+  QUERY              — user wants to search, list, or view existing data
+  GET_BRIEFING       — user wants their daily summary / briefing / what's on today
+  SERENDIPITY        — user wants a random old memory surfaced
+  MANAGE_COLLECTION  — user wants to create, rename, or list collections/categories
+  SAVE_FILE          — fallback for media messages without clear intent
 
 Rules:
-- If the message mentions a time or date AND says "remind me" → SET_REMINDER
-- If the message mentions a time/date AND scheduling/meeting/event → CREATE_EVENT
-- If the message is conversational or asks a question about their own data → QUERY
-- "What's on today", "my day", "briefing", "morning" → GET_BRIEFING
-- "Remember", "note", "save", "memory", "I learned", "interesting" → ADD_MEMORY
-- "Add task", "to-do", "do this", "action item" → ADD_TASK
-- "Surprise me", "random memory", "serendipity", "what did I save before" → SERENDIPITY
+- "remind me", "alert me", "don't forget" + time → SET_REMINDER
+- "schedule", "meeting", "event", "appointment" + time/date → CREATE_EVENT
+- "briefing", "my day", "what's on today", "morning summary" → GET_BRIEFING
+- "remember", "note", "save", "I learned", "interesting", "add to memory" → ADD_MEMORY
+- "add task", "to-do", "action item", "need to do" → ADD_TASK
+- "surprise me", "random memory", "serendipity" → SERENDIPITY
+- "create collection", "new collection", "make a collection called", "list my collections", "what collections" → MANAGE_COLLECTION
+- "show", "list", "search", "find", "what did I save", "my tasks", "my reminders" → QUERY
+
+━━━ SMART COLLECTION TAXONOMY for ADD_MEMORY ━━━
+Auto-assign the BEST matching collection from this list based on content:
+  Travel    — trips, hotels, flights, destinations, restaurants abroad, vacation plans, places to visit
+  Work      — official duties, government schemes, targets, projects, meetings, reports, admin work, field visits
+  Ideas     — innovations, suggestions, improvements, creative thoughts, things to try, experiments
+  Learning  — articles, books, statistics, research findings, insights, things you read/learned
+  People    — contacts, someone you met, relationship notes, person's details, references
+  Health    — fitness, medical, diet, exercise, wellness, symptoms, doctors
+  Finance   — money, budget, expenses, salary, savings, costs, investments
+  Personal  — personal thoughts, diary, reflections, emotions, non-work life
+  General   — anything that doesn't clearly fit above
+
+Also auto-generate 1-3 relevant tags.
 
 Extract fields based on intent and return ONLY valid JSON — no prose, no markdown:
 
 For ADD_MEMORY:
-{{"intent":"ADD_MEMORY","content":"<exact text to save>","collection":"<optional category>","tags":["<tag1>","<tag2>"]}}
+{{"intent":"ADD_MEMORY","content":"<exact text to save>","collection":"<Travel|Work|Ideas|Learning|People|Health|Finance|Personal|General>","tags":["<tag1>","<tag2>"]}}
 
 For ADD_TASK:
 {{"intent":"ADD_TASK","title":"<task title>","description":"<optional detail>","status":"<queue|this_week|today>","priority":"<normal|high>","deadline":"<YYYY-MM-DD or null>"}}
@@ -70,6 +86,9 @@ For SET_REMINDER:
 
 For QUERY:
 {{"intent":"QUERY","target":"<memories|tasks|calendar|reminders|all>","query":"<search text or null>","filter":"<optional: today|this_week|done|collection_name>"}}
+
+For MANAGE_COLLECTION:
+{{"intent":"MANAGE_COLLECTION","action":"<create|list|rename>","name":"<collection name if creating/renaming>","new_name":"<new name if renaming>"}}
 
 For GET_BRIEFING:
 {{"intent":"GET_BRIEFING"}}
@@ -140,11 +159,36 @@ def _fallback_classify(text: str) -> dict:
     if any(kw in lower for kw in ["surprise me", "random", "serendipity", "random memory"]):
         return {"intent": "SERENDIPITY"}
 
-    if any(kw in lower for kw in ["show", "list", "search", "find", "what did", "my tasks", "my memories"]):
+    if any(kw in lower for kw in ["create collection", "new collection", "make a collection", "list collections", "my collections", "what collections"]):
+        action = "list" if any(kw in lower for kw in ["list", "show", "what"]) else "create"
+        name = re.sub(r".*(called|named|:)\s*", "", lower).strip().title() if action == "create" else ""
+        return {"intent": "MANAGE_COLLECTION", "action": action, "name": name}
+
+    if any(kw in lower for kw in ["show", "list", "search", "find", "what did", "my tasks", "my memories", "my reminders"]):
         return {"intent": "QUERY", "target": "all", "query": text}
 
-    # Default: save as memory
-    return {"intent": "ADD_MEMORY", "content": text, "collection": "General", "tags": []}
+    # Default: save as memory with smart collection guessing
+    collection = _guess_collection(lower)
+    return {"intent": "ADD_MEMORY", "content": text, "collection": collection, "tags": []}
+
+
+def _guess_collection(lower: str) -> str:
+    """Simple keyword-based collection guesser for offline fallback."""
+    if any(kw in lower for kw in ["travel", "trip", "flight", "hotel", "airbnb", "bali", "destination", "vacation", "restaurant"]):
+        return "Travel"
+    if any(kw in lower for kw in ["work", "scheme", "project", "meeting", "report", "admin", "government", "panchayat", "district", "collector"]):
+        return "Work"
+    if any(kw in lower for kw in ["idea", "innovation", "suggestion", "try", "experiment", "what if"]):
+        return "Ideas"
+    if any(kw in lower for kw in ["learn", "read", "article", "book", "research", "study", "stat", "found"]):
+        return "Learning"
+    if any(kw in lower for kw in ["health", "gym", "diet", "exercise", "fitness", "doctor", "medical"]):
+        return "Health"
+    if any(kw in lower for kw in ["money", "budget", "expense", "salary", "cost", "finance", "invest"]):
+        return "Finance"
+    if any(kw in lower for kw in ["met", "contact", "person", "friend", "colleague", "people"]):
+        return "People"
+    return "General"
 
 
 # ── Voice/file classification ─────────────────────────────────────────────────
