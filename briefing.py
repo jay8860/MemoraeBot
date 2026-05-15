@@ -60,6 +60,8 @@ def build_briefing(user: dict, target_date: str = None) -> str:
             events = [
                 e for e in all_events
                 if e.get("start") and e["start"].date() == target_date_obj
+                # Exclude reminder-synced events (prefixed ⏰) — they appear in Reminders section
+                and not e.get("title", "").startswith("⏰")
             ]
             if events:
                 lines.append("📅 *Calendar*")
@@ -246,7 +248,8 @@ def build_query_response(user: dict, intent: dict) -> str:
         cal_client = ac.build_client(user)
         if cal_client:
             try:
-                events = cal_client.get_upcoming_events(days=7)
+                all_events = cal_client.get_upcoming_events(days=7)
+                events = [e for e in all_events if not e.get("title", "").startswith("⏰")]
                 if events:
                     lines[-1] = f"📅 *Calendar* — Next {len(events)} event(s)"
                     for evt in events[:8]:

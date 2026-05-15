@@ -362,7 +362,9 @@ async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await update.message.reply_text("📅 Fetching your calendar...")
     try:
-        events = cal_client.get_upcoming_events(days=7)
+        all_events = cal_client.get_upcoming_events(days=7)
+        # Exclude reminder-synced events (shown separately in /reminders)
+        events = [e for e in all_events if not e.get("title", "").startswith("⏰")]
         if not events:
             await update.message.reply_text("📅 No upcoming events in the next 7 days.")
             return
@@ -704,6 +706,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "Event noted" in replied_text or
                 "Updated event created" in replied_text):
             await _handle_event_reply(update, context, user, replied_text, user_text)
+            return
+        # Check if replied message is a reminder confirmation (MUST be before memory check)
+        rem_id = _extract_reminder_id_from_message(replied_text)
+        if rem_id:
+            await _handle_reminder_reply(update, user, rem_id, user_text)
             return
         # Check if replied message references a task
         task_id = _extract_task_id_from_message(replied_text)
@@ -1370,10 +1377,37 @@ def _extract_memory_id_from_message(text: str) -> int | None:
     m = re.search(r"Memory ID[:\s]+(\d+)", text, re.IGNORECASE)
     if m:
         return int(m.group(1))
-    m = re.search(r"ID[:\s]+(\d+)", text, re.IGNORECASE)
+    # Only use the bare "ID:" fallback when the message is clearly a memory message
+    # (not a reminder or task message — those are handled by their own extractors)
+    if "Reminder ID" not in text and "Task ID" not in text and "Reminder set" not in text:
+        m = re.search(r"\bID[:\s]+(\d+)", text, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _extract_reminder_id_from_message(text: str) -> int | None:
+    m = re.search(r"Reminder ID[:\s]+(\d+)", text, re.IGNORECASE)
     if m:
         return int(m.group(1))
     return None
+
+
+async def _handle_reminder_reply(update: Update, user: dict, rem_id: int, user_text: str) -> None:
+    """Handle replies to reminder confirmation messages."""
+    lower = user_text.lower().strip()
+    if lower in ("delete", "cancel", "remove", "clear", "dismiss"):
+        deleted = db.delete_reminder(rem_id, user["id"])
+        if deleted:
+            await update.message.reply_text(f"🗑 Reminder #{rem_id} deleted.")
+        else:
+            await update.message.reply_text(f"❓ Reminder #{rem_id} not found or already sent.")
+    else:
+        await update.message.reply_text(
+            f"*Reminder #{rem_id}* — reply options:\n"
+            "• `delete` — cancel this reminder",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 async def _handle_event_reply(
