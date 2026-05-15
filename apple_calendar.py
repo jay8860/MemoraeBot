@@ -138,34 +138,8 @@ class AppleCalendarClient:
 
         try:
             for cal in self._get_calendars():
-                try:
-                    # iCloud CalDAV does not support server-side expand — use expand=False
-                    # and filter dates client-side.
-                    try:
-                        raw_events = cal.date_search(start=now, end=end_range, expand=False)
-                    except TypeError:
-                        # Older caldav versions don't accept expand kwarg
-                        raw_events = cal.date_search(start=now, end=end_range)
-
-                    for vevent in raw_events:
-                        try:
-                            parsed = self._parse_event(vevent, cal)
-                            if parsed:
-                                # Client-side date filter
-                                start = parsed.get("start")
-                                if start:
-                                    start_utc = start.astimezone(pytz.utc)
-                                    if start_utc <= end_range:
-                                        results.append(parsed)
-                                else:
-                                    results.append(parsed)
-                        except Exception as inner:
-                            log.debug("Skipping malformed event: %s", inner)
-
-                except Exception as cal_exc:
-                    log.warning("Error searching calendar %s: %s",
-                                getattr(cal, "name", "?"), cal_exc)
-
+                events = self._fetch_from_calendar(cal, now, end_range)
+                results.extend(events)
         except Exception as exc:
             log.error("get_upcoming_events failed: %s", exc)
 
@@ -180,6 +154,60 @@ class AppleCalendarClient:
 
         unique.sort(key=lambda e: (e["start"] or datetime.min.replace(tzinfo=pytz.utc)))
         return unique
+
+    def _fetch_from_calendar(self, cal, now, end_range) -> list[dict]:
+        """Try multiple strategies to fetch events from a single calendar."""
+        cal_name = str(getattr(cal, "name", "?"))
+
+        # Strategy 1: date_search with expand=False (iCloud compatible)
+        try:
+            raw_events = cal.date_search(start=now, end=end_range, expand=False)
+            results = self._parse_events_list(raw_events, cal, now, end_range)
+            if results:
+                return results
+        except TypeError:
+            pass  # older caldav, try without expand
+        except Exception as e1:
+            log.debug("date_search(expand=False) failed for %s: %s", cal_name, e1)
+
+        # Strategy 2: date_search without expand kwarg
+        try:
+            raw_events = cal.date_search(start=now, end=end_range)
+            results = self._parse_events_list(raw_events, cal, now, end_range)
+            if results:
+                return results
+        except Exception as e2:
+            log.debug("date_search() failed for %s: %s", cal_name, e2)
+
+        # Strategy 3: fetch all events and filter client-side
+        # (slower but works for calendars that reject REPORT queries)
+        try:
+            raw_events = cal.events()
+            return self._parse_events_list(raw_events, cal, now, end_range)
+        except Exception as e3:
+            log.warning("All fetch strategies failed for calendar '%s': %s", cal_name, e3)
+
+        return []
+
+    def _parse_events_list(self, raw_events, cal, now, end_range) -> list[dict]:
+        """Parse a list of raw caldav events, filtering to the date window."""
+        results = []
+        for vevent in raw_events:
+            try:
+                parsed = self._parse_event(vevent, cal)
+                if not parsed:
+                    continue
+                start = parsed.get("start")
+                if start:
+                    start_utc = start.astimezone(pytz.utc)
+                    if now <= start_utc <= end_range:
+                        results.append(parsed)
+                else:
+                    # All-day events with no parseable time — include them
+                    results.append(parsed)
+            except Exception as inner:
+                log.debug("Skipping malformed event: %s", inner)
+        return results
 
     def _parse_event(self, vevent, cal) -> dict | None:
         """Parse a caldav event object into a plain dict. Works with caldav 3.x and older."""

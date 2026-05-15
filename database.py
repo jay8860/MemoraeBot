@@ -380,3 +380,23 @@ def delete_reminder(reminder_id: int, user_id: int) -> bool:
             (reminder_id, user_id),
         )
     return cur.rowcount > 0
+
+
+def delete_reminders_by_date(user_id: int, date_str: str) -> int:
+    """Delete all unsent reminders on a given date (YYYY-MM-DD). Returns count deleted."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM reminders WHERE user_id = ? AND is_sent = 0 AND remind_at LIKE ?",
+            (user_id, f"{date_str}%"),
+        )
+    return cur.rowcount
+
+
+def delete_all_reminders(user_id: int) -> int:
+    """Delete all pending reminders for a user. Returns count deleted."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM reminders WHERE user_id = ? AND is_sent = 0",
+            (user_id,),
+        )
+    return cur.rowcount

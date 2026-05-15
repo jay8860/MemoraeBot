@@ -40,6 +40,7 @@ Today's date is {today}. Classify the user's message into EXACTLY ONE of these i
   ADD_TASK           — user wants to add a to-do item, action item, or task
   CREATE_EVENT       — user wants to schedule a calendar event / meeting / appointment
   SET_REMINDER       — user wants to be reminded at a specific time
+  DELETE_REMINDER    — user wants to delete, cancel, or clear one or more reminders
   QUERY              — user wants to search, list, or view existing data
   GET_BRIEFING       — user wants their daily summary / briefing / what's on today
   SERENDIPITY        — user wants a random old memory surfaced
@@ -54,6 +55,7 @@ Rules:
 - "add task", "to-do", "action item", "need to do" → ADD_TASK
 - "surprise me", "random memory", "serendipity" → SERENDIPITY
 - "create collection", "new collection", "make a collection called", "list my collections", "what collections" → MANAGE_COLLECTION
+- "delete reminder", "cancel reminder", "remove reminder", "clear reminders", "delete all reminders" → DELETE_REMINDER
 - "show", "list", "search", "find", "what did I save", "my tasks", "my reminders" → QUERY
 
 ━━━ SMART COLLECTION TAXONOMY for ADD_MEMORY ━━━
@@ -83,6 +85,9 @@ For CREATE_EVENT:
 
 For SET_REMINDER:
 {{"intent":"SET_REMINDER","content":"<what to remind>","remind_at":"<YYYY-MM-DD HH:MM>","is_relative":false}}
+
+For DELETE_REMINDER:
+{{"intent":"DELETE_REMINDER","filter":"<all|today|tomorrow|date>","target_date":"<YYYY-MM-DD or null>"}}
 
 For QUERY:
 {{"intent":"QUERY","target":"<memories|tasks|calendar|reminders|all>","query":"<search text or null>","filter":"<optional: today|this_week|done|collection_name>"}}
@@ -143,6 +148,11 @@ def classify(user_text: str, user_timezone: str = "Asia/Kolkata") -> dict:
 def _fallback_classify(text: str) -> dict:
     """Rule-based fallback when Gemini is unavailable."""
     lower = text.lower().strip()
+
+    if any(kw in lower for kw in ["delete reminder", "cancel reminder", "remove reminder",
+                                    "clear reminder", "delete all reminder"]):
+        filt = "tomorrow" if "tomorrow" in lower else ("today" if "today" in lower else "all")
+        return {"intent": "DELETE_REMINDER", "filter": filt, "target_date": None}
 
     if any(kw in lower for kw in ["remind me", "reminder", "alert me", "don't forget", "dont forget"]):
         return {"intent": "SET_REMINDER", "content": text, "remind_at": None}

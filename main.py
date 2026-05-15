@@ -870,6 +870,9 @@ async def _dispatch_intent(
         text = briefing_module.build_serendipity_message(user)
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
+    elif intent == "DELETE_REMINDER":
+        await _handle_delete_reminder(update, user, intent_data)
+
     elif intent == "MANAGE_COLLECTION":
         await _handle_manage_collection(update, user, intent_data)
 
@@ -1099,6 +1102,41 @@ async def _handle_set_reminder(
         f"Reminder ID: {rem['id']}",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+async def _handle_delete_reminder(update: Update, user: dict, intent_data: dict) -> None:
+    uid        = user["id"]
+    filt       = (intent_data.get("filter") or "all").lower()
+    target_date = intent_data.get("target_date")
+
+    import pytz
+    tz = pytz.timezone(user.get("timezone") or DEFAULT_TIMEZONE)
+
+    if filt == "all":
+        count = db.delete_all_reminders(uid)
+        await update.message.reply_text(
+            f"🗑 Deleted all {count} pending reminder(s).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        # Resolve "today" / "tomorrow" → YYYY-MM-DD if no explicit date given
+        if not target_date:
+            now_local = datetime.now(tz)
+            if filt == "tomorrow":
+                import datetime as _dt
+                target_date = (now_local + _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                target_date = now_local.strftime("%Y-%m-%d")
+
+        count = db.delete_reminders_by_date(uid, target_date)
+        try:
+            label = datetime.strptime(target_date, "%Y-%m-%d").strftime("%-d %b %Y")
+        except Exception:
+            label = target_date
+        await update.message.reply_text(
+            f"🗑 Deleted {count} reminder(s) for {label}.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 async def _handle_query(update: Update, user: dict, intent_data: dict) -> None:
