@@ -888,41 +888,70 @@ async def _handle_set_reminder(
     intent_data: dict,
     raw_text: str,
 ) -> None:
-    content   = (intent_data.get("content")   or raw_text).strip()
-    raw_time  = intent_data.get("remind_at")
+    content  = (intent_data.get("content") or raw_text).strip()
+    raw_time = intent_data.get("remind_at")
+    tz_name  = user.get("timezone") or DEFAULT_TIMEZONE
 
-    tz_name = user.get("timezone") or DEFAULT_TIMEZONE
+    import pytz
+    tz_obj = pytz.timezone(tz_name)
 
-    # Parse the time
+    # ── Parse time → always store as UTC ─────────────────────────────────────
     remind_utc = None
+
     if raw_time:
-        remind_utc = raw_time  # Gemini gave us YYYY-MM-DD HH:MM
+        # Gemini returns time in the USER'S local timezone (e.g. "2026-05-16 10:00" = 10am IST)
+        # We must localise it then convert to UTC before storing.
+        try:
+            dt_naive  = datetime.datetime.strptime(raw_time, "%Y-%m-%d %H:%M")
+            dt_local  = tz_obj.localize(dt_naive)          # treat as local time
+            dt_utc    = dt_local.astimezone(pytz.utc)
+            remind_utc = dt_utc.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            remind_utc = None
+
     if not remind_utc:
+        # Fallback: dateparser with explicit timezone conversion
         remind_utc = ir.parse_remind_time(raw_text, tz_name)
 
     if not remind_utc:
         await update.message.reply_text(
-            "⏰ I understood you want a reminder but couldn't parse the time. "
+            "⏰ I understood you want a reminder but couldn't parse the time.\n"
             "Try: `Remind me to call Priya at 6pm` or `Remind me tomorrow at 9am`"
         )
         return
 
     rem = db.add_reminder(user["id"], content, remind_utc)
 
-    # Format for display
+    # ── Display time back in user's local timezone ────────────────────────────
     try:
-        import pytz
-        dt = datetime.datetime.strptime(remind_utc, "%Y-%m-%d %H:%M")
-        tz = pytz.timezone(tz_name)
-        dt_local = dt.replace(tzinfo=pytz.utc).astimezone(tz)
+        dt_utc_dt  = datetime.datetime.strptime(remind_utc, "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+        dt_local   = dt_utc_dt.astimezone(tz_obj)
         time_display = dt_local.strftime("%-d %b %Y at %-I:%M %p")
     except Exception:
         time_display = remind_utc
 
+    # ── Also create event in Apple Calendar ──────────────────────────────────
+    cal_note = ""
+    cal_client = ac.build_client(user)
+    if cal_client:
+        try:
+            dt_utc_dt = datetime.datetime.strptime(remind_utc, "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+            start_local = dt_utc_dt.astimezone(tz_obj).replace(tzinfo=None)  # naive local
+            end_local   = start_local + datetime.timedelta(minutes=30)
+            ok = cal_client.create_event(
+                title=f"⏰ Reminder: {content[:60]}",
+                start=start_local,
+                end=end_local,
+                description=f"MemoraeBot reminder\n{content}",
+            )
+            cal_note = "\n📅 Also added to Apple Calendar" if ok else ""
+        except Exception as exc:
+            log.warning("Calendar event for reminder failed: %s", exc)
+
     await update.message.reply_text(
         f"⏰ *Reminder set!*\n\n"
         f"_{content}_\n\n"
-        f"🕐 {time_display} ({tz_name})\n"
+        f"🕐 {time_display} ({tz_name}){cal_note}\n"
         f"Reminder ID: {rem['id']}",
         parse_mode=ParseMode.MARKDOWN,
     )
