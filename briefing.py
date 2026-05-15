@@ -19,53 +19,68 @@ import apple_calendar as ac
 log = logging.getLogger(__name__)
 
 
-def build_briefing(user: dict) -> str:
+def build_briefing(user: dict, target_date: str = None) -> str:
     """
     Build a full daily briefing string for a user.
-    user: dict row from the users table
+    target_date: optional 'YYYY-MM-DD' — defaults to today.
     """
-    user_id     = user["id"]
-    name        = (user.get("name") or "there").split()[0]
-    tz_name     = user.get("timezone") or "Asia/Kolkata"
-
     import pytz
-    tz = pytz.timezone(tz_name)
+
+    user_id = user["id"]
+    name    = (user.get("name") or "there").split()[0]
+    tz_name = user.get("timezone") or "Asia/Kolkata"
+    tz      = pytz.timezone(tz_name)
+
     now_local = datetime.now(tz)
-    date_str  = now_local.strftime("%A, %-d %B %Y")
 
-    lines = []
-    lines.append(f"🌅 *Good morning, {name}!*")
-    lines.append(f"_{date_str}_")
-    lines.append("")
+    # Resolve target date
+    if target_date:
+        try:
+            target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+            target_dt = tz.localize(target_dt.replace(hour=0, minute=0))
+        except Exception:
+            target_dt = now_local
+    else:
+        target_dt = now_local
 
-    # ── 1. Calendar events ────────────────────────────────────────────────────
+    target_date_obj = target_dt.date()
+    is_today        = (target_date_obj == now_local.date())
+
+    date_str  = target_dt.strftime("%A, %-d %B %Y")
+    greeting  = "Good morning" if is_today else f"Briefing for {target_dt.strftime('%-d %B')}"
+
+    lines = [f"🌅 *{greeting}, {name}!*", f"_{date_str}_", ""]
+
+    # ── 1. Calendar events for target date ───────────────────────────────────
     cal_client = ac.build_client(user)
-    calendar_section = []
     if cal_client:
         try:
-            events = cal_client.get_today_events()
+            days_ahead = max(1, (target_date_obj - now_local.date()).days + 1)
+            all_events = cal_client.get_upcoming_events(days=days_ahead + 1)
+            events = [
+                e for e in all_events
+                if e.get("start") and e["start"].date() == target_date_obj
+            ]
             if events:
-                calendar_section.append("📅 *Today's Calendar*")
+                lines.append("📅 *Calendar*")
                 for evt in events[:8]:
                     start = evt.get("start")
                     title = evt.get("title", "(Untitled)")
                     time_str = start.strftime("%-I:%M %p") if start else "All day"
-                    calendar_section.append(f"  • {time_str} — {title}")
+                    lines.append(f"  • {time_str} — {title}")
             else:
-                calendar_section.append("📅 *Calendar* — Nothing scheduled today, enjoy the open space!")
+                lines.append("📅 *Calendar* — Nothing scheduled, enjoy the open space!")
         except Exception as exc:
             log.warning("Briefing: calendar fetch failed: %s", exc)
-            calendar_section.append("📅 *Calendar* — Couldn't fetch events right now.")
+            lines.append("📅 *Calendar* — Couldn't fetch events right now.")
     else:
-        calendar_section.append("📅 *Calendar* — Not connected. Use /settings to link your Apple ID.")
-
-    lines.extend(calendar_section)
+        lines.append("📅 *Calendar* — Not connected. Use /settings to link your Apple ID.")
     lines.append("")
 
     # ── 2. Tasks ──────────────────────────────────────────────────────────────
-    today_tasks   = db.get_tasks(user_id, status="today")
-    week_tasks    = db.get_tasks(user_id, status="this_week")
-    queue_tasks   = db.get_tasks(user_id, status="queue")
+    today_tasks = db.get_tasks(user_id, status="today")
+    week_tasks  = db.get_tasks(user_id, status="this_week")
+    queue_tasks = db.get_tasks(user_id, status="queue")
 
     lines.append("✅ *Tasks*")
     if today_tasks:
@@ -75,46 +90,47 @@ def build_briefing(user: dict) -> str:
             lines.append(f"    {pri}• {t['title']}")
     else:
         lines.append("  🎯 *Today* — Nothing pinned for today yet.")
-
     if week_tasks:
         lines.append(f"  📆 *This Week ({len(week_tasks)})*")
         for t in week_tasks[:3]:
             lines.append(f"    • {t['title']}")
-
     if queue_tasks:
         lines.append(f"  📋 *Queue* — {len(queue_tasks)} item(s) waiting.")
     lines.append("")
 
-    # ── 3. Reminders ──────────────────────────────────────────────────────────
-    pending_reminders = db.get_pending_reminders(user_id)
-    upcoming = []
-    if pending_reminders:
-        for r in pending_reminders[:5]:
-            try:
-                remind_dt = datetime.strptime(r["remind_at"], "%Y-%m-%d %H:%M")
-                remind_local = remind_dt.replace(tzinfo=__import__("pytz").utc).astimezone(tz)
-                time_label = remind_local.strftime("%-d %b %-I:%M %p")
-                upcoming.append(f"  • {time_label} — {r['content']}")
-            except Exception:
-                upcoming.append(f"  • {r['content']}")
+    # ── 3. Reminders for target date ──────────────────────────────────────────
+    all_reminders = db.get_pending_reminders(user_id)
+    target_prefix = target_date_obj.strftime("%Y-%m-%d")
+    day_reminders = [r for r in all_reminders if r["remind_at"].startswith(target_prefix)]
 
-    if upcoming:
-        lines.append("⏰ *Upcoming Reminders*")
-        lines.extend(upcoming)
+    if day_reminders:
+        lines.append("⏰ *Reminders*")
+        for r in day_reminders[:8]:
+            try:
+                dt_utc   = datetime.strptime(r["remind_at"], "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+                dt_local = dt_utc.astimezone(tz)
+                time_label = dt_local.strftime("%-I:%M %p")
+                lines.append(f"  • {time_label} — {r['content']}")
+            except Exception:
+                lines.append(f"  • {r['content']}")
         lines.append("")
 
-    # ── 4. Serendipity ────────────────────────────────────────────────────────
-    if user.get("serendipity_on", 1):
+    # ── 4. Serendipity (today only) ───────────────────────────────────────────
+    if is_today and user.get("serendipity_on", 1):
         memory = db.get_random_memory(user_id)
         if memory:
-            saved_at = memory.get("created_at", "")[:10]
-            content  = memory["content"]
+            saved_raw = memory.get("created_at", "")[:10]
+            try:
+                saved = datetime.strptime(saved_raw, "%Y-%m-%d").strftime("%-d %b %Y")
+            except Exception:
+                saved = saved_raw
+            content = memory["content"]
             if len(content) > 200:
                 content = content[:197] + "..."
             lines.append("✨ *A Memory From Your Past*")
             lines.append(f"  _{content}_")
-            if saved_at:
-                lines.append(f"  — saved on {saved_at}")
+            if saved:
+                lines.append(f"  — saved on {saved}")
             lines.append("")
 
     # ── 5. Quick stats ────────────────────────────────────────────────────────
@@ -124,7 +140,7 @@ def build_briefing(user: dict) -> str:
     done_tasks  = task_counts.get("done", 0)
 
     lines.append("📊 *Your Stats*")
-    lines.append(f"  🧠 {mem_count} memories saved  ·  ✅ {total_tasks} open tasks  ·  🏁 {done_tasks} done")
+    lines.append(f"  🧠 {mem_count} memories  ·  ✅ {total_tasks} open tasks  ·  🏁 {done_tasks} done")
     lines.append("")
     lines.append("_Have a great day! Send me anything to save it._")
 

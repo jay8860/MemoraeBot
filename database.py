@@ -400,3 +400,18 @@ def delete_all_reminders(user_id: int) -> int:
             (user_id,),
         )
     return cur.rowcount
+
+
+def delete_reminders_except(user_id: int, except_keyword: str) -> tuple[int, int]:
+    """Delete all pending reminders except those whose content contains except_keyword.
+    Returns (deleted_count, kept_count)."""
+    with get_conn() as conn:
+        kept = conn.execute(
+            "SELECT COUNT(*) as cnt FROM reminders WHERE user_id = ? AND is_sent = 0 AND content LIKE ?",
+            (user_id, f"%{except_keyword}%"),
+        ).fetchone()["cnt"]
+        cur = conn.execute(
+            "DELETE FROM reminders WHERE user_id = ? AND is_sent = 0 AND content NOT LIKE ?",
+            (user_id, f"%{except_keyword}%"),
+        )
+    return cur.rowcount, kept

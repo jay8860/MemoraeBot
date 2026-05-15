@@ -50,7 +50,9 @@ Today's date is {today}. Classify the user's message into EXACTLY ONE of these i
 Rules:
 - "remind me", "alert me", "don't forget" + time → SET_REMINDER
 - "schedule", "meeting", "event", "appointment" + time/date → CREATE_EVENT
-- "briefing", "my day", "what's on today", "morning summary" → GET_BRIEFING
+- "briefing", "my day", "what's on today", "morning summary" → GET_BRIEFING (set target_date if a specific date is mentioned, e.g. "briefing for tomorrow" → target_date = tomorrow's date)
+- "every day", "every week", "every month", "daily", "weekly", "monthly", "repeat", "recurring", "on 20th 22nd 27th" → SET_REMINDER with recurrence field set accordingly; for custom dates list each as YYYY-MM-DD HH:MM in recurrence_dates
+- "delete except", "remove all except", "cancel all but" → DELETE_REMINDER with except_content set to the preserved item keyword
 - "remember", "note", "save", "I learned", "interesting", "add to memory" → ADD_MEMORY
 - "add task", "to-do", "action item", "need to do" → ADD_TASK
 - "surprise me", "random memory", "serendipity" → SERENDIPITY
@@ -96,10 +98,16 @@ For MANAGE_COLLECTION:
 {{"intent":"MANAGE_COLLECTION","action":"<create|list|rename>","name":"<collection name if creating/renaming>","new_name":"<new name if renaming>"}}
 
 For GET_BRIEFING:
-{{"intent":"GET_BRIEFING"}}
+{{"intent":"GET_BRIEFING","target_date":"<YYYY-MM-DD or null — null means today>"}}
 
 For SERENDIPITY:
 {{"intent":"SERENDIPITY"}}
+
+For DELETE_REMINDER:
+{{"intent":"DELETE_REMINDER","filter":"<all|today|tomorrow|date>","target_date":"<YYYY-MM-DD or null>","except_content":"<keyword to preserve, or null>"}}
+
+For SET_REMINDER (with optional recurrence):
+{{"intent":"SET_REMINDER","content":"<what to remind>","remind_at":"<YYYY-MM-DD HH:MM — first occurrence>","recurrence":"<none|daily|weekly|monthly|custom>","recurrence_end":"<YYYY-MM-DD or null>","recurrence_dates":"<list of YYYY-MM-DD HH:MM strings for custom, or null>"}}
 
 For SAVE_FILE:
 {{"intent":"SAVE_FILE","caption":"<caption text if any>"}}
@@ -152,7 +160,13 @@ def _fallback_classify(text: str) -> dict:
     if any(kw in lower for kw in ["delete reminder", "cancel reminder", "remove reminder",
                                     "clear reminder", "delete all reminder"]):
         filt = "tomorrow" if "tomorrow" in lower else ("today" if "today" in lower else "all")
-        return {"intent": "DELETE_REMINDER", "filter": filt, "target_date": None}
+        except_content = None
+        if "except" in lower or "but" in lower:
+            # Extract the word/phrase after "except" or "but"
+            m = re.search(r"(?:except|but)\s+(?:to\s+)?(.+)", lower)
+            if m:
+                except_content = m.group(1).strip()
+        return {"intent": "DELETE_REMINDER", "filter": filt, "target_date": None, "except_content": except_content}
 
     if any(kw in lower for kw in ["remind me", "reminder", "alert me", "don't forget", "dont forget"]):
         return {"intent": "SET_REMINDER", "content": text, "remind_at": None}
@@ -164,7 +178,11 @@ def _fallback_classify(text: str) -> dict:
         return {"intent": "ADD_TASK", "title": text, "status": "queue"}
 
     if any(kw in lower for kw in ["briefing", "my day", "what's on", "whats on", "morning", "summary"]):
-        return {"intent": "GET_BRIEFING"}
+        target = None
+        if "tomorrow" in lower:
+            from datetime import date, timedelta
+            target = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+        return {"intent": "GET_BRIEFING", "target_date": target}
 
     if any(kw in lower for kw in ["surprise me", "random", "serendipity", "random memory"]):
         return {"intent": "SERENDIPITY"}

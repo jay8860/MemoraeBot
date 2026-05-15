@@ -863,7 +863,8 @@ async def _dispatch_intent(
         await _handle_query(update, user, intent_data)
 
     elif intent == "GET_BRIEFING":
-        text = briefing_module.build_briefing(user)
+        target_date = intent_data.get("target_date")
+        text = briefing_module.build_briefing(user, target_date=target_date)
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
     elif intent == "SERENDIPITY":
@@ -1023,6 +1024,114 @@ async def _handle_create_event(update: Update, user: dict, intent_data: dict) ->
         )
 
 
+async def _handle_recurring_reminder(
+    update: Update,
+    user: dict,
+    content: str,
+    recurrence: str,
+    recurrence_end: str,
+    recurrence_dates: list,
+    base_time_str: str,
+) -> None:
+    """Create multiple reminder entries for recurring reminders."""
+    import pytz
+    tz      = pytz.timezone(user.get("timezone") or DEFAULT_TIMEZONE)
+    uid     = user["id"]
+    dates_to_create = []
+
+    if recurrence == "custom" and recurrence_dates:
+        # Custom list of dates already provided by Gemini
+        dates_to_create = recurrence_dates
+    else:
+        # Parse base time (Gemini returns in local tz)
+        try:
+            dt_naive  = datetime.strptime(base_time_str, "%Y-%m-%d %H:%M")
+            dt_local  = tz.localize(dt_naive)
+            dt_utc    = dt_local.astimezone(pytz.utc)
+        except Exception:
+            await update.message.reply_text("⏰ Couldn't parse the start time for the recurring reminder.")
+            return
+
+        # Parse end date
+        if recurrence_end:
+            try:
+                end_local = tz.localize(datetime.strptime(recurrence_end, "%Y-%m-%d").replace(hour=23, minute=59))
+                end_utc   = end_local.astimezone(pytz.utc)
+            except Exception:
+                end_utc = dt_utc + datetime.timedelta(days=30)
+        else:
+            defaults = {"daily": 30, "weekly": 84, "monthly": 180}
+            end_utc  = dt_utc + datetime.timedelta(days=defaults.get(recurrence, 30))
+
+        current = dt_utc
+        while current <= end_utc and len(dates_to_create) < 60:
+            dates_to_create.append(current.strftime("%Y-%m-%d %H:%M"))
+            if recurrence == "daily":
+                current += datetime.timedelta(days=1)
+            elif recurrence == "weekly":
+                current += datetime.timedelta(weeks=1)
+            elif recurrence == "monthly":
+                m = current.month + 1
+                y = current.year + (m - 1) // 12
+                m = ((m - 1) % 12) + 1
+                try:
+                    current = current.replace(year=y, month=m)
+                except Exception:
+                    break
+
+    # Insert all reminder records
+    created = 0
+    for dt_str in dates_to_create:
+        try:
+            # Dates from Gemini (custom) may already be local — convert to UTC
+            try:
+                dt_n = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+                dt_utc_val = tz.localize(dt_n).astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                dt_utc_val = dt_str
+            db.add_reminder(uid, content, dt_utc_val)
+            created += 1
+        except Exception:
+            pass
+
+    # Also sync first occurrence to Apple Calendar
+    cal_note = ""
+    if dates_to_create:
+        cal_client = ac.build_client(user)
+        if cal_client:
+            try:
+                first_utc = datetime.strptime(dates_to_create[0], "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+                first_local = first_utc.astimezone(tz).replace(tzinfo=None)
+                cal_client.create_event(
+                    title=f"⏰ {content[:60]}",
+                    start=first_local,
+                    end=first_local + datetime.timedelta(minutes=30),
+                    description=f"MemoraeBot recurring reminder: {content}",
+                )
+                cal_note = "\n📅 First occurrence added to Apple Calendar ✅"
+            except Exception:
+                pass
+
+    # Format first/last in local time for display
+    try:
+        first_local_str = tz.localize(datetime.strptime(dates_to_create[0], "%Y-%m-%d %H:%M")).astimezone(tz).strftime("%-d %b %Y at %-I:%M %p")
+        last_local_str  = tz.localize(datetime.strptime(dates_to_create[-1], "%Y-%m-%d %H:%M")).astimezone(tz).strftime("%-d %b %Y")
+    except Exception:
+        first_local_str = dates_to_create[0] if dates_to_create else "N/A"
+        last_local_str  = dates_to_create[-1] if dates_to_create else "N/A"
+
+    recurrence_label = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly", "custom": "Custom dates"}.get(recurrence, recurrence.title())
+    await update.message.reply_text(
+        f"🔁 *Recurring reminder set!*\n\n"
+        f"_{content}_\n\n"
+        f"📆 *Repeat:* {recurrence_label}\n"
+        f"🗓 *First:* {first_local_str}\n"
+        f"🏁 *Last:* {last_local_str}\n"
+        f"✅ *{created} occurrence(s) scheduled*{cal_note}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 async def _handle_set_reminder(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1032,6 +1141,18 @@ async def _handle_set_reminder(
 ) -> None:
     content  = (intent_data.get("content") or raw_text).strip()
     raw_time = intent_data.get("remind_at")
+
+    # ── Recurring reminder ─────────────────────────────────────────────────────
+    recurrence = (intent_data.get("recurrence") or "none").lower()
+    if recurrence and recurrence not in ("none", "null", ""):
+        await _handle_recurring_reminder(
+            update, user, content,
+            recurrence=recurrence,
+            recurrence_end=intent_data.get("recurrence_end"),
+            recurrence_dates=intent_data.get("recurrence_dates") or [],
+            base_time_str=raw_time or "",
+        )
+        return
     tz_name  = user.get("timezone") or DEFAULT_TIMEZONE
 
     import pytz
@@ -1105,38 +1226,43 @@ async def _handle_set_reminder(
 
 
 async def _handle_delete_reminder(update: Update, user: dict, intent_data: dict) -> None:
-    uid        = user["id"]
-    filt       = (intent_data.get("filter") or "all").lower()
-    target_date = intent_data.get("target_date")
+    uid             = user["id"]
+    filt            = (intent_data.get("filter") or "all").lower()
+    target_date     = intent_data.get("target_date")
+    except_content  = (intent_data.get("except_content") or "").strip()
 
     import pytz
     tz = pytz.timezone(user.get("timezone") or DEFAULT_TIMEZONE)
 
+    # ── "delete all except X" ─────────────────────────────────────────────────
+    if except_content:
+        deleted, kept = db.delete_reminders_except(uid, except_content)
+        await update.message.reply_text(
+            f"🗑 Deleted {deleted} reminder(s), kept {kept} matching *{except_content}*.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── "delete all" ──────────────────────────────────────────────────────────
     if filt == "all":
         count = db.delete_all_reminders(uid)
-        await update.message.reply_text(
-            f"🗑 Deleted all {count} pending reminder(s).",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    else:
-        # Resolve "today" / "tomorrow" → YYYY-MM-DD if no explicit date given
-        if not target_date:
-            now_local = datetime.now(tz)
-            if filt == "tomorrow":
-                import datetime as _dt
-                target_date = (now_local + _dt.timedelta(days=1)).strftime("%Y-%m-%d")
-            else:
-                target_date = now_local.strftime("%Y-%m-%d")
+        await update.message.reply_text(f"🗑 Deleted all {count} pending reminder(s).")
+        return
 
-        count = db.delete_reminders_by_date(uid, target_date)
-        try:
-            label = datetime.strptime(target_date, "%Y-%m-%d").strftime("%-d %b %Y")
-        except Exception:
-            label = target_date
-        await update.message.reply_text(
-            f"🗑 Deleted {count} reminder(s) for {label}.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+    # ── "delete for today / tomorrow / specific date" ─────────────────────────
+    if not target_date:
+        now_local = datetime.now(tz)
+        if filt == "tomorrow":
+            target_date = (now_local + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            target_date = now_local.strftime("%Y-%m-%d")
+
+    count = db.delete_reminders_by_date(uid, target_date)
+    try:
+        label = datetime.strptime(target_date, "%Y-%m-%d").strftime("%-d %b %Y")
+    except Exception:
+        label = target_date
+    await update.message.reply_text(f"🗑 Deleted {count} reminder(s) for {label}.")
 
 
 async def _handle_query(update: Update, user: dict, intent_data: dict) -> None:
