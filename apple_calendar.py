@@ -65,9 +65,11 @@ class AppleCalendarClient:
         return dt.astimezone(self.tz)
 
     def _build_ical(self, title: str, start_local: datetime,
-                    end_local: datetime, description: str = "") -> str:
-        """Build a valid iCal string for a single event."""
-        from icalendar import Calendar, Event as ICalEvent
+                    end_local: datetime, description: str = "",
+                    alert_minutes: int = 60) -> str:
+        """Build a valid iCal string for a single event with an alert."""
+        from icalendar import Calendar, Event as ICalEvent, Alarm
+        from datetime import timedelta
 
         cal   = Calendar()
         cal.add("prodid", "-//MemoraeBot//EN")
@@ -82,8 +84,15 @@ class AppleCalendarClient:
         evt.add("dtstamp",  datetime.now(pytz.utc))
         if description:
             evt.add("description", description)
-        cal.add_component(evt)
 
+        # Default alert: N minutes before the event
+        alarm = Alarm()
+        alarm.add("action",  "DISPLAY")
+        alarm.add("description", title)
+        alarm.add("trigger", timedelta(minutes=-alert_minutes))
+        evt.add_component(alarm)
+
+        cal.add_component(evt)
         return cal.to_ical().decode("utf-8")
 
     # ── Public API ────────────────────────────────────────────────────────────
