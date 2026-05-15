@@ -383,9 +383,19 @@ async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
+    import pytz
+    tz_name = user.get("timezone") or DEFAULT_TIMEZONE
+    tz_obj  = pytz.timezone(tz_name)
+
     lines = [f"⏰ *Pending Reminders ({len(reminders)})*\n"]
     for r in reminders[:10]:
-        lines.append(f"• [{r['id']}] *{r['remind_at']}* UTC")
+        try:
+            dt_utc   = datetime.datetime.strptime(r["remind_at"], "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+            dt_local = dt_utc.astimezone(tz_obj)
+            time_str = dt_local.strftime("%-d %b %Y, %-I:%M %p")
+        except Exception:
+            time_str = r["remind_at"]
+        lines.append(f"• ⏰ *{time_str}*")
         lines.append(f"  {r['content']}")
         lines.append("")
 
@@ -562,13 +572,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     tg_user = update.effective_user
     user    = _get_or_create_user(tg_user.id, tg_user.first_name or "")
 
-    # Handle reply-to-message (task editing)
+    # Handle reply-to-message (task / memory / event editing)
     if update.message.reply_to_message:
         replied_text = (
             update.message.reply_to_message.text
             or update.message.reply_to_message.caption
             or ""
         )
+        # Check if replied message is a calendar event confirmation
+        if ("Event created in Apple Calendar" in replied_text or
+                "Event noted" in replied_text or
+                "Updated event created" in replied_text):
+            await _handle_event_reply(update, context, user, replied_text, user_text)
+            return
         # Check if replied message references a task
         task_id = _extract_task_id_from_message(replied_text)
         if task_id:
@@ -987,6 +1003,86 @@ def _extract_memory_id_from_message(text: str) -> int | None:
     if m:
         return int(m.group(1))
     return None
+
+
+async def _handle_event_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict,
+    original_event_text: str,
+    user_text: str,
+) -> None:
+    """Handle when user replies to a calendar event message to modify it."""
+    import pytz
+
+    # Extract original event title from the confirmation message
+    title_match = re.search(r"\*(.+?)\*", original_event_text)
+    orig_title  = title_match.group(1).strip() if title_match else "Event"
+    # Strip any emoji prefix that might have been bolded
+    orig_title  = re.sub(r"^(📅|Event created in Apple Calendar!|Updated event created in Apple Calendar!)\s*", "", orig_title).strip()
+
+    lower    = user_text.lower().strip()
+    tz_name  = user.get("timezone") or DEFAULT_TIMEZONE
+
+    # Detect if it's a title rename only
+    rename_match = re.search(r"(?:rename|change\s+(?:title|name))[:\s]+to[:\s]+(.+)$", lower, re.IGNORECASE)
+    if rename_match:
+        new_title = rename_match.group(1).strip()
+        await update.message.reply_text(
+            f"✏️ To rename a calendar event you'll need to edit it directly in the Calendar app.\n\n"
+            f"New title you wanted: *{new_title}*\n\n"
+            f"_Tip: if you want to recreate it with a new name, just send:_\n"
+            f"`Schedule {new_title} [date + time]`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # For date/time changes — classify the user's text with full context
+    context_msg = f"{orig_title} {user_text}"
+    intent_data = ir.classify(context_msg, tz_name)
+
+    raw_start = intent_data.get("start_datetime")
+    # If Gemini didn't give a datetime, try parsing user_text directly
+    if not raw_start:
+        raw_start = user_text
+
+    start_dt, end_dt = ir.smart_parse_event_times(raw_start, intent_data.get("end_datetime"), tz_name)
+
+    if not start_dt:
+        await update.message.reply_text(
+            f"❓ I understood you want to change this event but couldn't parse the new date/time.\n\n"
+            f"Try: `change date to 16 May 3:50 PM` or `move to tomorrow 4pm`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    cal_client = ac.build_client(user)
+    if not cal_client:
+        await update.message.reply_text("❌ Apple Calendar not connected. Use /setapple to connect.")
+        return
+
+    # Use the original title (or a new one if Gemini extracted one)
+    new_title = (intent_data.get("title") or "").strip()
+    if not new_title or new_title.lower() in ("event", "meeting"):
+        new_title = orig_title
+
+    ok, err = cal_client.create_event(new_title, start_dt, end_dt)
+    if ok:
+        tz_obj      = pytz.timezone(tz_name)
+        start_local = start_dt if start_dt.tzinfo else tz_obj.localize(start_dt)
+        time_str    = start_local.strftime("%-d %b %Y, %-I:%M %p")
+        await update.message.reply_text(
+            f"📅 *Updated event created in Apple Calendar!*\n\n"
+            f"*{new_title}*\n"
+            f"🕐 {time_str} ({tz_name})\n\n"
+            f"_⚠️ The old event was not auto-deleted — please remove it from your Calendar app._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await update.message.reply_text(
+            f"❌ Failed to create updated event.\n`{err[:120]}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 async def _handle_task_reply(

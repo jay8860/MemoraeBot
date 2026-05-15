@@ -156,10 +156,11 @@ def build_query_response(user: dict, intent: dict) -> str:
     Build a response for a QUERY intent.
     intent: {target, query, filter}
     """
-    user_id = user["id"]
-    target  = (intent.get("target") or "all").lower()
-    query   = (intent.get("query")  or "").strip()
-    filt    = (intent.get("filter") or "").lower()
+    user_id  = user["id"]
+    tz_name  = user.get("timezone") or "Asia/Kolkata"
+    target   = (intent.get("target") or "all").lower()
+    query    = (intent.get("query")  or "").strip()
+    filt     = (intent.get("filter") or "").lower()
 
     lines = []
 
@@ -207,10 +208,17 @@ def build_query_response(user: dict, intent: dict) -> str:
     if target in ("reminders", "all", "reminder"):
         reminders = db.get_pending_reminders(user_id)
         if reminders:
+            import pytz
+            tz_obj = pytz.timezone(tz_name)
             lines.append(f"⏰ *Reminders* ({len(reminders)} pending)")
             for r in reminders[:5]:
-                remind_at = r["remind_at"]
-                lines.append(f"  • [{r['id']}] {remind_at} — {r['content']}")
+                try:
+                    dt_utc   = datetime.strptime(r["remind_at"], "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
+                    dt_local = dt_utc.astimezone(tz_obj)
+                    time_str = dt_local.strftime("%-d %b, %-I:%M %p")
+                except Exception:
+                    time_str = r["remind_at"]
+                lines.append(f"  • ⏰ *{time_str}* — {r['content']}")
             lines.append("")
 
     # Calendar
